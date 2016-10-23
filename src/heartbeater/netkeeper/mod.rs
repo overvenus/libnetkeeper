@@ -1,3 +1,6 @@
+use std::str;
+use std::str::FromStr;
+
 use openssl::crypto::{hash, symm};
 use linked_hash_map::LinkedHashMap;
 
@@ -37,7 +40,7 @@ pub trait ContentEncrypter {
 
     fn key_bytes(&self) -> &[u8];
     fn encrypt(&self, content_bytes: &[u8]) -> Vec<u8>;
-    // fn decrypt(&self, &[u8]) -> Packet;
+    fn decrypt(&self, content_bytes: &[u8]) -> Vec<u8>;
 }
 
 impl Frame {
@@ -55,9 +58,7 @@ impl Frame {
     pub fn add(&mut self, name: &str, value: &str) {
         self.content.insert(name.to_string(), value.to_string());
     }
-}
 
-impl Frame {
     fn as_bytes(&self, join_with: Option<&str>) -> Vec<u8> {
         let mut linked_content: Vec<String> = Vec::new();
         let join_with = match join_with {
@@ -69,6 +70,38 @@ impl Frame {
             linked_content.push(format!("{}={}", key, value));
         }
         linked_content.join(join_with).as_bytes().to_vec()
+    }
+
+    fn from_bytes(bytes: &[u8], split_with: Option<&str>) -> Self {
+        let split_with = match split_with {
+            Some(split_with) => split_with,
+            None => "&",
+        };
+
+        let byte_content;
+        unsafe {
+            byte_content = str::from_utf8_unchecked(bytes);
+        }
+
+        let mut type_name = String::from("");
+        let mut frame_content: LinkedHashMap<String, String> = LinkedHashMap::new();
+        for param in byte_content.split(split_with) {
+            if !param.contains("=") {
+                continue;
+            }
+            let parts: Vec<String> = param.splitn(2, "=").map(|s| s.to_string()).collect();
+            if parts[0].to_lowercase() == "type" {
+                type_name = String::from_str(&parts[1]).unwrap();
+            } else {
+                frame_content.insert(String::from_str(&parts[0]).unwrap(),
+                                     String::from_str(&parts[1]).unwrap());
+            }
+        }
+
+        Frame {
+            type_name: type_name,
+            content: frame_content,
+        }
     }
 
     fn len(&self) -> u32 {
@@ -183,6 +216,14 @@ impl ContentEncrypter for AES128Encrypter {
                       content_bytes)
             .unwrap()
     }
+
+    fn decrypt(&self, content_bytes: &[u8]) -> Vec<u8> {
+        symm::decrypt(symm::Type::AES_128_ECB,
+                      self.key_bytes(),
+                      None,
+                      content_bytes)
+            .unwrap()
+    }
 }
 
 #[test]
@@ -196,6 +237,19 @@ fn test_frame_concat() {
 
     assert_eq!(frame_str,
                "TYPE=HEARTBEAT&USER_NAME=05802278989@HYXY.XY&PASSWORD=000000");
+    assert_eq!(frame.len(), 60);
+}
+
+#[test]
+fn test_frame_parse_from_bytes() {
+    let origin = "TYPE=HEARTBEAT&USER_NAME=05802278989@HYXY.XY&PASSWORD=000000".to_string();
+    let bytes = origin.as_bytes();
+    let frame = Frame::from_bytes(&bytes, None);
+
+    let frame_bytes = frame.as_bytes(None);
+    let frame_str = ::std::str::from_utf8(&frame_bytes).unwrap();
+
+    assert_eq!(frame_str, origin);
     assert_eq!(frame.len(), 60);
 }
 
